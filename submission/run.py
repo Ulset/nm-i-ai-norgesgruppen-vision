@@ -3,12 +3,12 @@
 
 Executed as: python run.py --input /data/images --output /output/predictions.json
 
-Two-stage pipeline:
-  1. YOLOv8x tiled inference → bounding boxes + baseline categories
+Two-stage pipeline with ensemble + TTA:
+  1. YOLOv8x@1280 + YOLOv8l@640 ensemble with tiled inference + TTA
   2. EfficientNet-B2 crop classification + reference embedding fallback
 
 Uses ONNX models with CUDAExecutionProvider for GPU acceleration.
-Falls back to YOLO-only mode if classifier fails to load.
+Falls back gracefully if any component is missing.
 
 IMPORTANT: No blocked imports (os, sys, subprocess, pickle, yaml, etc.)
 """
@@ -32,7 +32,6 @@ from utils import (
 )
 
 # Inference config
-YOLO_INPUT_SIZE = 1280
 TILE_SIZE = 1280
 TILE_OVERLAP = 0.2
 WBF_IOU_THR = 0.55
@@ -42,6 +41,7 @@ REFERENCE_THRESHOLD = 0.8
 CROP_BATCH_SIZE = 32
 CONFIDENCE_FLOOR = 0.05
 UNKNOWN_PRODUCT_ID = 355
+ENABLE_TTA = True  # Horizontal flip TTA
 
 
 def load_onnx_session(model_path: str) -> ort.InferenceSession:
@@ -100,19 +100,93 @@ def run_yolo_on_tile(
     return boxes_xyxy[mask], scores[mask], class_ids[mask]
 
 
+def run_yolo_on_image(
+    session: ort.InferenceSession,
+    img: Image.Image,
+    input_size: int = 1280,
+    tile_size: int = 1280,
+) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray]]:
+    """Run YOLO with tiled inference on a single image.
+
+    Returns lists of boxes/scores/labels (normalized to [0,1]) for WBF.
+    """
+    img_w, img_h = img.size
+
+    all_boxes = []
+    all_scores = []
+    all_labels = []
+
+    # Tiled inference
+    tiles = compute_tiles(img_w, img_h, tile_size=tile_size, overlap=TILE_OVERLAP)
+    for tx, ty, tw, th in tiles:
+        tile_img = img.crop((tx, ty, tx + tw, ty + th))
+        boxes, scores, class_ids = run_yolo_on_tile(session, tile_img, input_size)
+        if len(boxes) == 0:
+            continue
+        boxes = map_tile_boxes_to_image(boxes, (tx, ty))
+        boxes_norm = boxes.copy()
+        boxes_norm[:, [0, 2]] /= img_w
+        boxes_norm[:, [1, 3]] /= img_h
+        boxes_norm = np.clip(boxes_norm, 0, 1)
+        all_boxes.append(boxes_norm)
+        all_scores.append(scores)
+        all_labels.append(class_ids)
+
+    # Full image pass
+    full_boxes, full_scores, full_labels = run_yolo_on_tile(session, img, input_size)
+    if len(full_boxes) > 0:
+        full_boxes_norm = full_boxes.copy()
+        full_boxes_norm[:, [0, 2]] /= img_w
+        full_boxes_norm[:, [1, 3]] /= img_h
+        full_boxes_norm = np.clip(full_boxes_norm, 0, 1)
+        all_boxes.append(full_boxes_norm)
+        all_scores.append(full_scores)
+        all_labels.append(full_labels)
+
+    return all_boxes, all_scores, all_labels
+
+
+def run_yolo_tta(
+    session: ort.InferenceSession,
+    img: Image.Image,
+    input_size: int = 1280,
+    tile_size: int = 1280,
+) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray]]:
+    """Run YOLO with TTA (horizontal flip) on a single image.
+
+    Returns combined lists for WBF merging.
+    """
+    img_w, img_h = img.size
+
+    # Original
+    all_boxes, all_scores, all_labels = run_yolo_on_image(
+        session, img, input_size, tile_size
+    )
+
+    if ENABLE_TTA:
+        # Horizontal flip
+        img_flip = img.transpose(Image.FLIP_LEFT_RIGHT)
+        flip_boxes, flip_scores, flip_labels = run_yolo_on_image(
+            session, img_flip, input_size, tile_size
+        )
+        # Mirror boxes back: x1_new = 1 - x2_old, x2_new = 1 - x1_old
+        for i in range(len(flip_boxes)):
+            b = flip_boxes[i].copy()
+            b[:, 0], b[:, 2] = 1 - flip_boxes[i][:, 2], 1 - flip_boxes[i][:, 0]
+            flip_boxes[i] = b
+
+        all_boxes.extend(flip_boxes)
+        all_scores.extend(flip_scores)
+        all_labels.extend(flip_labels)
+
+    return all_boxes, all_scores, all_labels
+
+
 def run_classifier_batch(
     session: ort.InferenceSession,
     crops: list[np.ndarray],
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Run classifier on a batch of crops.
-
-    Args:
-        crops: List of (224, 224, 3) uint8 arrays.
-
-    Returns:
-        probs: (N, num_classes) softmax probabilities
-        embeddings: (N, embed_dim) penultimate layer embeddings
-    """
+    """Run classifier on a batch of crops."""
     if not crops:
         return np.zeros((0, 357)), np.zeros((0, 1408))
 
@@ -138,56 +212,37 @@ def run_classifier_batch(
 
 def process_image(
     img_path: Path,
-    yolo_session: ort.InferenceSession,
+    yolo_sessions: list[tuple[ort.InferenceSession, int, int]],
     clf_session: ort.InferenceSession | None,
     reference_embeddings: np.ndarray | None,
     class_idx_to_cat_id: dict[int, int] | None = None,
 ) -> list[dict]:
-    """Run full two-stage pipeline on a single image."""
+    """Run full ensemble + two-stage pipeline on a single image.
+
+    Args:
+        yolo_sessions: List of (session, input_size, tile_size) tuples for ensemble.
+    """
     img = Image.open(img_path).convert("RGB")
     img_w, img_h = img.size
     image_id = image_id_from_filename(img_path.name)
 
-    # Stage 1: Tiled YOLO inference
-    tiles = compute_tiles(img_w, img_h, tile_size=TILE_SIZE, overlap=TILE_OVERLAP)
-
+    # Stage 1: Ensemble YOLO inference with TTA
     all_boxes = []
     all_scores = []
     all_labels = []
 
-    for tx, ty, tw, th in tiles:
-        tile_img = img.crop((tx, ty, tx + tw, ty + th))
-        boxes, scores, class_ids = run_yolo_on_tile(yolo_session, tile_img)
-
-        if len(boxes) == 0:
-            continue
-
-        boxes = map_tile_boxes_to_image(boxes, (tx, ty))
-
-        boxes_norm = boxes.copy()
-        boxes_norm[:, [0, 2]] /= img_w
-        boxes_norm[:, [1, 3]] /= img_h
-        boxes_norm = np.clip(boxes_norm, 0, 1)
-
-        all_boxes.append(boxes_norm)
-        all_scores.append(scores)
-        all_labels.append(class_ids)
-
-    # Also run on full image resized
-    full_boxes, full_scores, full_labels = run_yolo_on_tile(yolo_session, img)
-    if len(full_boxes) > 0:
-        full_boxes_norm = full_boxes.copy()
-        full_boxes_norm[:, [0, 2]] /= img_w
-        full_boxes_norm[:, [1, 3]] /= img_h
-        full_boxes_norm = np.clip(full_boxes_norm, 0, 1)
-        all_boxes.append(full_boxes_norm)
-        all_scores.append(full_scores)
-        all_labels.append(full_labels)
+    for session, input_size, tile_size in yolo_sessions:
+        boxes, scores, labels = run_yolo_tta(
+            session, img, input_size, tile_size
+        )
+        all_boxes.extend(boxes)
+        all_scores.extend(scores)
+        all_labels.extend(labels)
 
     if not all_boxes:
         return []
 
-    # WBF merge
+    # WBF merge all detections from all models + tiles + TTA
     boxes_list = [b.tolist() for b in all_boxes]
     scores_list = [s.tolist() for s in all_scores]
     labels_list = [l.tolist() for l in all_labels]
@@ -238,9 +293,7 @@ def process_image(
                 yolo_conf = float(merged_scores[i])
                 yolo_class_conf = yolo_conf
 
-                # CRITICAL: Remap classifier probs from ImageFolder index to category_id.
-                # ImageFolder sorts folder names lexicographically, so
-                # index 0 != category_id 0. We need this mapping.
+                # Remap classifier probs from ImageFolder index to category_id
                 clf_probs = all_probs[j]
                 if class_idx_to_cat_id is not None:
                     remapped = np.zeros(357, dtype=np.float32)
@@ -291,25 +344,40 @@ def main():
 
     input_dir = Path(args.input)
     output_path = Path(args.output)
-
     script_dir = Path(__file__).resolve().parent
-    yolo_path = script_dir / "yolo_detector.onnx"
-    clf_path = script_dir / "classifier.onnx"
-    ref_path = script_dir / "reference_embeddings.npy"
 
-    # Load YOLO (required)
-    yolo_session = load_onnx_session(str(yolo_path))
+    # Load YOLO models (ensemble — use all available)
+    yolo_sessions = []
+
+    yolo_x_path = script_dir / "yolo_detector.onnx"
+    if yolo_x_path.exists():
+        yolo_sessions.append((
+            load_onnx_session(str(yolo_x_path)),
+            1280,  # input_size
+            1280,  # tile_size
+        ))
+
+    yolo_l_path = script_dir / "yolo_l_detector.onnx"
+    if yolo_l_path.exists():
+        yolo_sessions.append((
+            load_onnx_session(str(yolo_l_path)),
+            640,   # input_size
+            640,   # tile_size (no tiling for 640 model)
+        ))
 
     # Load classifier (optional — graceful degradation)
     clf_session = None
     reference_embeddings = None
     class_idx_to_cat_id = None
     try:
+        clf_path = script_dir / "classifier.onnx"
+        ref_path = script_dir / "reference_embeddings.npy"
+        mapping_path = script_dir / "class_mapping.json"
+
         if clf_path.exists():
             clf_session = load_onnx_session(str(clf_path))
         if ref_path.exists():
             reference_embeddings = np.load(str(ref_path))
-        mapping_path = script_dir / "class_mapping.json"
         if mapping_path.exists():
             with open(mapping_path) as f:
                 raw = json.load(f)
@@ -327,7 +395,10 @@ def main():
     )
 
     for img_path in image_files:
-        preds = process_image(img_path, yolo_session, clf_session, reference_embeddings, class_idx_to_cat_id)
+        preds = process_image(
+            img_path, yolo_sessions, clf_session,
+            reference_embeddings, class_idx_to_cat_id,
+        )
         all_predictions.extend(preds)
 
     # Write output
