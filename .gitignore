@@ -22,6 +22,9 @@ __pycache__/
 .venv/
 *.egg-info/
 
+# Knowledge base
+knowledge/
+
 # OS
 .DS_Store
 __MACOSX/
@@ -32,3 +35,6 @@ __MACOSX/
 
 # Submission artifacts
 submission.zip
+
+# Analysis output
+analysis_output/
