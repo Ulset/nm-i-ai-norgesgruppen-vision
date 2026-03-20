@@ -12,6 +12,7 @@
 - **Service account**: `59268370848-compute@developer.gserviceaccount.com`
 - **gcloud profile**: `nmiai-unlimited`
 - **Region**: `europe-north1`
+- **Compute**: UNLIMITED — use as many VMs/GPUs as needed
 
 ## Key Constraints
 - Sandbox: Python 3.11, L4 GPU (24GB VRAM), 8GB RAM, 300s timeout, NO network
@@ -20,7 +21,7 @@
 - Max 3 weight files, 420MB total, 10 Python files
 - Pin `ultralytics==8.1.0`, `timm==0.9.12` for training (match sandbox versions)
 - Train with nc=357 (IDs 0-355 + 356 safety)
-- 3 submissions/day max — validate locally first
+- 6 submissions/day max — validate locally first
 
 ## Running
 ```bash
