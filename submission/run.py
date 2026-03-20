@@ -30,6 +30,7 @@ from utils import (
     xyxy_to_xywh,
     image_id_from_filename,
 )
+from baked_data import load_reference_embeddings, load_class_mapping
 
 # Inference config
 TILE_SIZE = 1280
@@ -371,17 +372,11 @@ def main():
     class_idx_to_cat_id = None
     try:
         clf_path = script_dir / "classifier.onnx"
-        ref_path = script_dir / "reference_embeddings.npy"
-        mapping_path = script_dir / "class_mapping.json"
-
         if clf_path.exists():
             clf_session = load_onnx_session(str(clf_path))
-        if ref_path.exists():
-            reference_embeddings = np.load(str(ref_path))
-        if mapping_path.exists():
-            with open(mapping_path) as f:
-                raw = json.load(f)
-            class_idx_to_cat_id = {int(k): int(v) for k, v in raw.items()}
+        # Load baked-in reference data (embedded in baked_data.py)
+        reference_embeddings = load_reference_embeddings()
+        class_idx_to_cat_id = load_class_mapping()
     except Exception:
         clf_session = None
         reference_embeddings = None
