@@ -95,10 +95,24 @@ def main():
         Path(args.data_dir) / "train",
         transform=build_transforms(is_train=True),
     )
+
+    # CRITICAL: Force val to use the same class_to_idx as train.
+    # ImageFolder assigns indices based on which directories exist,
+    # and val has fewer classes than train (278 vs 352), causing
+    # completely different index assignments.
     val_dataset = datasets.ImageFolder(
         Path(args.data_dir) / "val",
         transform=build_transforms(is_train=False),
     )
+    val_dataset.class_to_idx = train_dataset.class_to_idx
+    # Re-map val samples to use train's indices
+    val_samples = []
+    for path, _ in val_dataset.samples:
+        cls_name = Path(path).parent.name
+        if cls_name in train_dataset.class_to_idx:
+            val_samples.append((path, train_dataset.class_to_idx[cls_name]))
+    val_dataset.samples = val_samples
+    val_dataset.targets = [s[1] for s in val_samples]
 
     train_loader = DataLoader(
         train_dataset, batch_size=args.batch, shuffle=True,
