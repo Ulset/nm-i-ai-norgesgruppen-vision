@@ -23,6 +23,29 @@ NUM_CLASSES = 357
 IMG_SIZE = 224
 
 
+class FocalLoss(nn.Module):
+    """Focal loss for addressing class imbalance in classification tasks.
+
+    Reduces the loss contribution from easy examples and focuses training
+    on hard negatives.
+    """
+
+    def __init__(self, alpha=None, gamma=2.0, label_smoothing=0.0):
+        super().__init__()
+        self.alpha = alpha  # class weights tensor
+        self.gamma = gamma
+        self.label_smoothing = label_smoothing
+
+    def forward(self, inputs, targets):
+        ce_loss = nn.functional.cross_entropy(
+            inputs, targets, weight=self.alpha,
+            label_smoothing=self.label_smoothing, reduction='none'
+        )
+        pt = torch.exp(-ce_loss)
+        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
+        return focal_loss.mean()
+
+
 def build_transforms(is_train: bool) -> transforms.Compose:
     if is_train:
         return transforms.Compose([
@@ -60,6 +83,10 @@ def main():
     parser.add_argument("--patience", type=int, default=10)
     parser.add_argument("--output-dir", default="runs/classifier")
     parser.add_argument("--name", default="efficientnet_b2_shelf")
+    parser.add_argument("--focal-loss", action="store_true",
+                        help="Use focal loss instead of cross-entropy")
+    parser.add_argument("--label-smoothing", type=float, default=0.0,
+                        help="Label smoothing factor (default: 0.0)")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -86,7 +113,21 @@ def main():
     model = model.to(device)
 
     class_weights = compute_class_weights(train_dataset).to(device)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    if args.focal_loss:
+        criterion = FocalLoss(
+            alpha=class_weights,
+            gamma=2.0,
+            label_smoothing=args.label_smoothing,
+        )
+        print(f"Using FocalLoss (gamma=2.0, label_smoothing={args.label_smoothing})")
+    elif args.label_smoothing > 0:
+        criterion = nn.CrossEntropyLoss(
+            weight=class_weights,
+            label_smoothing=args.label_smoothing,
+        )
+        print(f"Using CrossEntropyLoss (label_smoothing={args.label_smoothing})")
+    else:
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
