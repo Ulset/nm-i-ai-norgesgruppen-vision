@@ -9,6 +9,9 @@ data/
 *.safetensors
 *.npy
 
+# Generated configs
+dataset.yaml
+
 # Training outputs
 runs/
 wandb/
