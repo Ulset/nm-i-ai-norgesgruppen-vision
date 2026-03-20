@@ -11,6 +11,10 @@ import argparse
 from pathlib import Path
 
 import torch
+# PyTorch 2.6+ defaults weights_only=True which breaks ultralytics 8.1.0 model loading.
+_torch_load = torch.load
+torch.load = lambda *args, **kwargs: _torch_load(*args, **{**kwargs, "weights_only": False})
+
 import timm
 from ultralytics import YOLO
 
