@@ -9,16 +9,26 @@ OUTPUT="submission.zip"
 
 echo "Checking submission files..."
 
-for f in run.py utils.py yolo_detector.onnx; do
+# Required: run.py and utils.py
+for f in run.py utils.py baked_data.py; do
   if [ ! -f "$SUBMISSION_DIR/$f" ]; then
     echo "ERROR: Missing $SUBMISSION_DIR/$f"
     exit 1
   fi
 done
 
-for f in classifier.onnx reference_embeddings.npy class_mapping.json; do
-  if [ ! -f "$SUBMISSION_DIR/$f" ]; then
-    echo "WARNING: Missing $SUBMISSION_DIR/$f (will run in YOLO-only mode)"
+# Need at least one YOLO model
+YOLO_COUNT=$(find "$SUBMISSION_DIR" -name "yolo_*.onnx" | wc -l | tr -d ' ')
+if [ "$YOLO_COUNT" -eq 0 ]; then
+  echo "ERROR: No YOLO model found (expected yolo_*.onnx)"
+  exit 1
+fi
+echo "  Found $YOLO_COUNT YOLO model(s)"
+
+# Optional classifier/DINOv2
+for f in classifier.onnx dinov2_fp16.onnx; do
+  if [ -f "$SUBMISSION_DIR/$f" ]; then
+    echo "  Found $f"
   fi
 done
 
@@ -41,6 +51,14 @@ WEIGHT_COUNT=$(find "$SUBMISSION_DIR" \( -name "*.onnx" -o -name "*.pt" -o -name
 echo "  Weight files: $WEIGHT_COUNT / 3"
 if [ "$WEIGHT_COUNT" -gt 3 ]; then
   echo "ERROR: Too many weight files (max 3)!"
+  exit 1
+fi
+
+# Check total size
+TOTAL_SIZE=$(du -sm "$SUBMISSION_DIR" | cut -f1)
+echo "  Total submission size: ${TOTAL_SIZE}MB / 420MB"
+if [ "$TOTAL_SIZE" -gt 420 ]; then
+  echo "ERROR: Submission too large (${TOTAL_SIZE}MB > 420MB)!"
   exit 1
 fi
 
