@@ -1,0 +1,31 @@
+# Data
+data/
+*.zip
+
+# Model weights
+*.pt
+*.pth
+*.onnx
+*.safetensors
+*.npy
+
+# Training outputs
+runs/
+wandb/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# OS
+.DS_Store
+__MACOSX/
+
+# IDE
+.idea/
+.vscode/
+
+# Submission artifacts
+submission.zip
