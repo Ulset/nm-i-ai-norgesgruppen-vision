@@ -20,8 +20,6 @@ from pathlib import Path
 from PIL import Image
 
 import onnxruntime as ort
-import torch
-import timm
 from ensemble_boxes import weighted_boxes_fusion
 
 from utils import (
@@ -186,11 +184,10 @@ def run_yolo_tta(
 
 
 def run_classifier_batch(
-    session,
+    session: ort.InferenceSession,
     crops: list[np.ndarray],
-    torch_device=None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Run classifier on a batch of crops. Supports both ONNX and PyTorch models."""
+    """Run classifier on a batch of crops."""
     if not crops:
         return np.zeros((0, 357)), np.zeros((0, 1408))
 
@@ -200,22 +197,22 @@ def run_classifier_batch(
     batch = (batch - mean) / std
     batch = np.transpose(batch, (0, 3, 1, 2))  # NCHW
 
-    if isinstance(session, torch.nn.Module):
-        # PyTorch path — much faster on GPU
-        tensor = torch.from_numpy(batch).half().to(torch_device)
-        with torch.no_grad():
-            logits = session(tensor)
-        probs = torch.softmax(logits, dim=1).float().cpu().numpy()
-        embeddings = np.zeros((len(crops), 1408))
-    else:
-        # ONNX path
-        input_name = session.get_inputs()[0].name
-        outputs = session.run(None, {input_name: batch})
-        probs = outputs[0]
-        embeddings = outputs[1] if len(outputs) > 1 else np.zeros((len(crops), 1408))
-        if probs.min() < 0 or probs.sum(axis=1).mean() > 1.5:
-            exp_probs = np.exp(probs - probs.max(axis=1, keepdims=True))
-            probs = exp_probs / exp_probs.sum(axis=1, keepdims=True)
+    input_name = session.get_inputs()[0].name
+    if "float16" in session.get_inputs()[0].type:
+        batch = batch.astype(np.float16)
+    outputs = session.run(None, {input_name: batch})
+
+    probs = outputs[0]
+    if probs.dtype == np.float16:
+        probs = probs.astype(np.float32)
+    embeddings = outputs[1] if len(outputs) > 1 else np.zeros((len(crops), 1408))
+    if hasattr(embeddings, 'dtype') and embeddings.dtype == np.float16:
+        embeddings = embeddings.astype(np.float32)
+
+    # Softmax if not already applied
+    if probs.min() < 0 or probs.sum(axis=1).mean() > 1.5:
+        exp_probs = np.exp(probs - probs.max(axis=1, keepdims=True))
+        probs = exp_probs / exp_probs.sum(axis=1, keepdims=True)
 
     return probs, embeddings
 
@@ -223,10 +220,9 @@ def run_classifier_batch(
 def process_image(
     img_path: Path,
     yolo_sessions: list[tuple[ort.InferenceSession, int, int]],
-    clf_session,
+    clf_session: ort.InferenceSession | None,
     reference_embeddings: np.ndarray | None,
     class_idx_to_cat_id: dict[int, int] | None = None,
-    clf_device=None,
 ) -> list[dict]:
     """Run full ensemble + two-stage pipeline on a single image.
 
@@ -291,7 +287,7 @@ def process_image(
         all_embeds = []
         for batch_start in range(0, len(crops), CROP_BATCH_SIZE):
             batch = crops[batch_start:batch_start + CROP_BATCH_SIZE]
-            probs, embeds = run_classifier_batch(clf_session, batch, clf_device)
+            probs, embeds = run_classifier_batch(clf_session, batch)
             all_probs.append(probs)
             all_embeds.append(embeds)
 
@@ -377,21 +373,13 @@ def main():
         ))
 
     # Load classifier (optional — graceful degradation)
-    # Try PyTorch .pt first (faster), fall back to ONNX
     clf_session = None
-    clf_device = None
     reference_embeddings = None
     class_idx_to_cat_id = None
     try:
-        clf_pt_path = script_dir / "classifier.pt"
-        clf_onnx_path = script_dir / "classifier.onnx"
-        if clf_pt_path.exists():
-            clf_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            model = timm.create_model("efficientnet_b2", pretrained=False, num_classes=357)
-            model.load_state_dict(torch.load(str(clf_pt_path), map_location="cpu", weights_only=True))
-            clf_session = model.to(clf_device).half().eval()
-        elif clf_onnx_path.exists():
-            clf_session = load_onnx_session(str(clf_onnx_path))
+        clf_path = script_dir / "classifier.onnx"
+        if clf_path.exists():
+            clf_session = load_onnx_session(str(clf_path))
         # Load baked-in reference data (embedded in baked_data.py)
         reference_embeddings = load_reference_embeddings()
         class_idx_to_cat_id = load_class_mapping()
@@ -411,7 +399,6 @@ def main():
         preds = process_image(
             img_path, yolo_sessions, clf_session,
             reference_embeddings, class_idx_to_cat_id,
-            clf_device=clf_device,
         )
         all_predictions.extend(preds)
 
