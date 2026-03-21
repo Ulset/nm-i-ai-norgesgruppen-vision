@@ -47,6 +47,18 @@ Old pipeline (run.py + utils.py) + new YOLOv9e full-data + old FP16 classifier +
 - Speed: 3.5s/img
 - BUT: on competition test set scored only 0.8336 (embedding mismatch hurt)
 
+## Status as of 2026-03-21 night
+- FP32 dual-output classifier ONNX exported (31.3MB) on training-classifier-fix VM
+  - Matching reference embeddings built (352/357 categories)
+  - BUT: FP32 = too slow (~13s/img)
+- FP16 dual-output ONNX failed (mixed type error in Conv nodes)
+
+## Ready for tomorrow morning
+- **Safe submission zip** built: old pipeline + old FP16 classifier + old baked_data + new YOLOv9e full-data
+  - This has matched embedding spaces (old clf + old embeddings)
+  - Previous attempt failed because we used NEW embeddings with OLD classifier
+  - Predicted score: should beat 0.8346 thanks to better YOLO
+
 ## Solutions to Try Tomorrow
 1. **Export fixed classifier as FP16 ONNX with dual outputs (logits + embeddings)**
    - Need to wrap timm model to output both
