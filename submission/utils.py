@@ -108,39 +108,6 @@ def classify_detections(
     return 355  # Configurable via UNKNOWN_PRODUCT_ID in run.py
 
 
-def classify_detections_dinov2(
-    crop_embedding: np.ndarray,
-    reference_embeddings: np.ndarray,
-    reference_threshold: float = 0.6,
-    unknown_product_id: int = 355,
-) -> tuple[int, float]:
-    """Classify using DINOv2 cosine similarity only (no softmax logits).
-
-    Returns:
-        (category_id, similarity_score)
-    """
-    if reference_embeddings is None or crop_embedding is None:
-        return unknown_product_id, 0.0
-
-    # Embeddings should already be L2-normalized, but ensure it
-    norm_crop = np.linalg.norm(crop_embedding)
-    if norm_crop < 1e-8:
-        return unknown_product_id, 0.0
-    crop_normed = crop_embedding / norm_crop
-
-    norms_ref = np.linalg.norm(reference_embeddings, axis=1, keepdims=True)
-    norms_ref = np.maximum(norms_ref, 1e-8)
-    ref_normed = reference_embeddings / norms_ref
-
-    similarities = ref_normed @ crop_normed
-    best_idx = int(np.argmax(similarities))
-    best_sim = float(similarities[best_idx])
-
-    if best_sim >= reference_threshold:
-        return best_idx, best_sim
-    return unknown_product_id, best_sim
-
-
 def compute_final_score(yolo_conf: float, classification_conf: float) -> float:
     """Compute the final confidence score for a detection.
     score = yolo_conf * classification_conf, clamped to [0, 1].

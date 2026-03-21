@@ -88,23 +88,41 @@ Augmentation: mosaic=1.0, mixup=0.2, copy_paste=0.3, close_mosaic=30.
 
 ## Round 2: Full-Data + Augmented Training (started ~20:30 UTC)
 
-### YOLO11x full-data @ 1280px (VM: training-vm-1)
-- **Dataset**: ALL 248 images, no val holdout (20 dummy val from training)
-- **Latest**: epoch 55/300, mAP50 **0.896** (inflated — val overlaps train)
-- **Note**: Real accuracy unknown until competition submission
+### YOLO11x full-data @ 1280px (VM: training-vm-1) — DONE
+- **Dataset**: ALL 248 images, no val holdout
+- **Completed**: 300/300 epochs, mAP50 **0.987*** (*val overlaps train)
+- **ONNX exported**: 109.7MB, on VM-6 + local (/tmp/yolo_11x_full.onnx)
+- **Saved to**: `runs/detect/yolo11x_full/` on VM-1
 
 ### YOLOv9e full-data @ 1280px (VM: training-vm-2)
 - **Dataset**: ALL 248 images, no val holdout
 - **Latest**: epoch 44/300, mAP50 **0.868**
 
-### YOLO11x synthetic @ 1280px (VM: training-classifier-fix)
+### YOLO11x synthetic @ 1280px (VM: training-classifier-fix) — DONE
 - **Dataset**: 248 real + 95 synthetic images (copy-paste from product ref images)
-- **Started**: ~21:10 UTC
-- **Latest**: epoch 8/300, mAP50 0.449 (early, ramping up)
+- **Started**: ~21:10 UTC, **early-stopped at epoch 157**
+- **Final**: mAP50 **0.724**
+- **ONNX exported**: 109.7MB, copied to VM-6 for benchmarking
+- **Saved to**: `runs/detect/yolo11x_synthetic2/` on VM-4
 
-### YOLO11x pseudo-labeled @ 1280px (VM: training-dinov2-embeds)
+### YOLO11x pseudo-labeled @ 1280px (VM: training-dinov2-embeds) — DONE
 - **Dataset**: Original + 2,489 pseudo-labels (conf>0.8)
-- **Latest**: epoch 50/300, mAP50 **0.696**
+- **Early-stopped**: epoch 87/300, final mAP50 **0.721**
+- **ONNX exported**: 109.7MB, copied to VM-6 for benchmarking
+- **Saved to**: `runs/detect/yolo11x_pseudo2/` on VM-5
+
+### Benchmark Results (VM-6, round 1 models)
+Scored against 49-image val set with full pipeline (TTA + tiling + WBF + classifier):
+
+| Config | Det mAP50 | Notes |
+|--------|----------|-------|
+| YOLO11x r1 solo | **0.734** | Best single model |
+| YOLOv8l old solo | **0.722** | Old baseline |
+| YOLOv9e r1 solo | **0.716** | |
+| Ensemble (11x+v9e) | **0.708** | Lower than solo — WBF needs tuning |
+
+Classification mAP scoring failed (numpy compat issue on VM-6). Detection-only scores above.
+Key finding: ensemble HURTS with current WBF settings. Single YOLO11x is best.
 
 ### Model Soup (VM: training-yolo11x-640) — DONE
 - Averaged 4 checkpoints (epoch80/90/100/best) from round 1 YOLO11x
@@ -120,8 +138,8 @@ Augmentation: mosaic=1.0, mixup=0.2, copy_paste=0.3, close_mosaic=30.
 
 | Model | mAP50 / Acc | Location | Notes |
 |-------|------------|----------|-------|
-| YOLO11x full-data | 0.896* | VM-1 `runs/detect/yolo11x_full/` | *inflated val, TRAINING |
-| YOLOv9e full-data | 0.868* | VM-2 `runs/detect/yolov9e_full/` | *inflated val, TRAINING |
+| YOLO11x full-data | 0.987* | VM-1 `runs/detect/yolo11x_full/` | *inflated val, DONE, ONNX on VM-6 |
+| YOLOv9e full-data | 0.988* | VM-2 `runs/detect/yolov9e_full2/` | *inflated val, DONE, ONNX on VM-6 |
 | YOLO11x round1 | 0.738 | VM-1 `runs/detect/yolo11x_12802/` | ONNX exported (109.7MB) |
 | YOLOv9e round1 | 0.735 | VM-2 `runs/detect/yolov9e_12802/` | ONNX exported (110.6MB) |
 | YOLO11x pseudo | 0.696 | VM-5 `runs/detect/yolo11x_pseudo/` | TRAINING |
