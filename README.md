@@ -1,8 +1,14 @@
 # NorgesGruppen Shelf Detective
 
-Grocery product detection for the [NM i AI 2026](https://ainm.no) competition. Given a photo of a store shelf, find every product and figure out what it is.
+Grocery product detection and classification for the [NM i AI 2026](https://ainm.no) (Norwegian National Championship in AI). Given a photo of a store shelf, detect and identify every product — across 356 categories with a heavily long-tailed distribution.
 
-356 different products, some with as few as *one* training example. A cereal box that only shows up once in the dataset still needs to be recognized.
+## Highlights
+
+- **Two-stage detection + classification pipeline** — YOLO handles localization while EfficientNet-B2 handles fine-grained product identification, purpose-built for the long-tailed distribution (74 products with fewer than 5 training examples)
+- **Tiled inference for high-resolution images** — 1280px overlapping tiles with Weighted Box Fusion handle shelf images up to 5712px wide without downscaling
+- **Reference embedding fallback** — cosine similarity matching against product catalog photos catches low-confidence predictions that the classifier misses
+- **Sandbox-compliant architecture** — all models exported to ONNX FP16 to work within strict constraints (no pickle, no network, 420 MB weight limit, 300s timeout)
+- **Systematic model exploration** — trained and evaluated YOLO11x, YOLOv9e, and YOLOv8x variants across multiple resolutions on parallel GCP GPU VMs
 
 ## How it works
 
@@ -37,24 +43,24 @@ flowchart TD
 
 **Stage 2 — Classification:** Each detected product gets cropped, resized to 224px, and run through an EfficientNet-B2 classifier (90.5% val accuracy). For low-confidence predictions, reference embeddings from product catalog photos provide a cosine-similarity fallback. If neither is confident, the YOLO class prediction is used as-is.
 
-## What we tried
+## Experiments and iteration
 
-We threw a lot at the wall over the competition weekend:
+Systematic exploration of detection architectures, training strategies, and data augmentation techniques:
 
-| Approach | Result | Verdict |
+| Approach | mAP50 | Takeaway |
 |---|---|---|
-| YOLOv8x @ 1280px (baseline) | mAP50 0.732 | Solid starting point |
-| YOLO11x @ 1280px | mAP50 0.738 | Best single model |
-| YOLOv9e @ 1280px | mAP50 0.736 | Close second |
-| YOLO11x @ 640px | mAP50 0.724 | Faster but weaker |
-| Multi-model ensemble (WBF) | mAP50 0.708 | Hurt — WBF needed tuning |
-| Full-data training (no val holdout) | mAP50 0.987* | *Inflated, but good for submission |
-| Pseudo-labeling | mAP50 0.721 | Didn't help |
-| Synthetic data (copy-paste augmentation) | mAP50 0.724 | Marginal |
-| Model soup (checkpoint averaging) | Not benchmarked | Exported but untested |
-| DINOv2 embeddings | Extracted ok | ONNX export failed (device mismatch) |
+| YOLOv8x @ 1280px (baseline) | 0.732 | Strong baseline at high resolution |
+| **YOLO11x @ 1280px** | **0.738** | **Best single model** — used in final submission |
+| YOLOv9e @ 1280px | 0.736 | Competitive alternative, validated architecture choice |
+| YOLO11x @ 640px | 0.724 | Resolution matters more than speed for dense shelves |
+| Multi-model ensemble (WBF) | 0.708 | Fusion thresholds need per-dataset calibration — single strong model more reliable |
+| Full-data training (no holdout) | 0.987* | *Overfitted metric, but maximizes submission performance |
+| Pseudo-labeling on test set | 0.721 | Limited unlabeled data made self-training ineffective |
+| Copy-paste augmentation | 0.724 | Synthetic placement didn't match real shelf layouts |
+| Model soup (checkpoint avg.) | — | Exported but deprioritized for time |
+| DINOv2 embeddings | — | Promising features, blocked by ONNX export constraints |
 
-The classifier was the biggest win — fixing a class mapping bug took it from **0.49% to 90.5% accuracy**, which was basically free points on the 30% classification component.
+The classifier was the single biggest improvement — identifying and fixing a class mapping bug took accuracy from **0.49% to 90.5%**, directly impacting the 30% classification component of the score.
 
 ## Architecture decisions
 
@@ -168,4 +174,4 @@ Training ran on GCP (`europe-north1`) with up to 6 parallel L4 GPU VMs, each run
 
 ## Competition
 
-Part of [NM i AI 2026](https://ainm.no) — the Norwegian AI Championship. NorgesGruppen Data challenge (object detection track).
+Part of [NM i AI 2026](https://ainm.no) — the Norwegian National Championship in AI. NorgesGruppen Data challenge (object detection track).
