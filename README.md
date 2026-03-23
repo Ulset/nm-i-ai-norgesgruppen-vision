@@ -4,8 +4,6 @@ Grocery product detection for the [NM i AI 2026](https://ainm.no) competition. G
 
 356 different products, some with as few as *one* training example. A cereal box that only shows up once in the dataset still needs to be recognized.
 
-**Best score: 0.8346** (rank #89 of 195 teams, top score was 0.9200)
-
 ## How it works
 
 Two-stage pipeline — first find the products, then classify them.
